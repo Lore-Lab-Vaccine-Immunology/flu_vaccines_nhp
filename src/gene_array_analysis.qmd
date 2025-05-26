@@ -1,0 +1,614 @@
+---
+title: "Influenza vaccine study"
+format: html
+editor: visual
+---
+
+# Omics Data Analysis
+
+This document provides a step-by-step guide to analyzing omics data using R. The data is located in the `data` folder, and the results will be saved in a `results` folder named according to today's date.
+
+## Setup
+
+```{r}
+# Load necessary libraries
+library(matrixStats)
+library(factoextra)
+library(ggplot2)
+library(gplots)
+library(RColorBrewer)
+library(wesanderson)
+library(limma)
+library(gridExtra)
+library(ggsci)
+library(EnhancedVolcano)
+library(UpSetR)
+library(eulerr)
+library(pheatmap)
+library(KEGGREST)
+library(clusterProfiler)
+library(org.Mmu.eg.db)
+library(dplyr)
+
+# Set up directories
+data_dir <- "../data"
+results_dir <- paste0("../results/", Sys.Date())
+dir.create(results_dir, recursive = TRUE)
+knitr::opts_chunk$set(seed = 1)
+
+# Load data
+MA <- read.csv(file.path(data_dir, "MAdata.csv"), header = TRUE, row.names = 1, check.names = FALSE)
+MAinfo <- read.csv(file.path(data_dir, "MAinfo.csv"), header = TRUE, row.names = 1, check.names = FALSE)
+ProbeBG <- read.csv(file.path(data_dir, "ProbeOverBackground.csv"), header = TRUE, row.names = 1, check.names = FALSE)
+ProbeInfo <- read.csv(file.path(data_dir, "ProbeInfo.csv"), header = TRUE, row.names = 1, check.names = FALSE) %>%
+  mutate("ProbeID"=rownames(.))
+
+# Check data consistency
+stopifnot(identical(rownames(MA), rownames(ProbeInfo)))
+stopifnot(identical(rownames(MAinfo), colnames(MA)))
+stopifnot(identical(rownames(ProbeInfo), rownames(ProbeBG)))
+stopifnot(identical(colnames(MA), colnames(ProbeBG)))
+
+# color code
+# Define named color codes
+vaccine_colors <- c(
+  mRNA = "#EE2926",
+  Vaxigrip = "#456990",
+  Fluad = "#49BEAA"
+)
+          
+```
+
+## Data Preprocessing
+
+```{r}
+# Log2 transform the MA data
+MA <- log2(MA)
+
+# Filter probes with associated gene ID
+MA.clean <- MA[ProbeInfo$GeneID != 0, ]
+ProbeBG <- ProbeBG[ProbeInfo$GeneID != 0, ]
+
+# Filter probes with expression over background in all samples
+ProbeBG$sum <- rowSums(ProbeBG == "TRUE")
+ProbeBG <- ProbeBG[ProbeBG$sum > 0, ]
+
+# Filter MA data based on filtered probes
+MA.clean <- MA.clean[rownames(ProbeBG), ]
+
+# Remove probes with any NA values
+MA.clean <- MA.clean[rowSums(is.na(MA.clean)) == 0, ]
+
+# Filter probes by variance (e.g., sd > 0.25)
+#keep_var <- apply(MA.clean, 1, sd) > 0.5
+#MA.clean <- MA.clean[keep_var, ]
+```
+
+## Principal Component Analysis (PCA)
+
+### All samples 0-24h
+
+```{r}
+# Perform PCA
+MA.pca <- prcomp(t(MA.clean), scale. = TRUE)
+score.df <- as.data.frame(MA.pca$x)
+score.df$Vaccine <- MAinfo[rownames(score.df), "Vaccine"]
+score.df$Timepoint <- MAinfo[rownames(score.df), "Timepoint"]
+score.df$NHP <- MAinfo[rownames(score.df), "AnimalID"]
+
+# Calculate variance explained
+var_explained <- summary(MA.pca)$importance[2, 1:2] * 100  # PC1 and PC2
+
+# Plot PCA
+pca_plot <- function(data, color_var, title) {
+ p <- ggplot(data, aes(x = PC1, y = PC2, color = .data[[color_var]], shape =.data[["Timepoint"]])) +
+      geom_point(size = 2) +
+      theme_minimal() +
+      theme(aspect.ratio = 1,
+            panel.border = element_rect(color = "black",
+                                      fill = NA,
+                                      linewidth = 1),
+            axis.text.x = element_text(size = 12),
+            axis.text.y = element_text(size = 12)) +
+      labs(x = paste0("PC1 (", round(var_explained[1], 1), "%)"),
+           y = paste0("PC2 (", round(var_explained[2], 1), "%)"),
+           title = title)
+  if (color_var == "Vaccine") 
+    p <- p + scale_color_manual(values = vaccine_colors) + labs (title = "") else p
+ return(p)
+}
+
+p1 <- pca_plot(score.df, "Vaccine", "PCA by Vaccine")
+p2 <- pca_plot(score.df, "Timepoint", "PCA by Timepoint")
+p3 <- pca_plot(score.df, "NHP", "PCA by NHP")
+
+# Save PCA plots
+ggsave(file.path(results_dir, "PCA_plots.pdf"), arrangeGrob(p1, p2, p3, ncol = 3), width = 15, height = 5)
+
+ggsave(plot = p1, filename = file.path(results_dir, "PCA_plot_vaccine_group.pdf"), width = 4, height = 4)
+```
+
+### Samples 24h fold change
+
+```{r}
+# Get animals with both 0h and 24h
+ids <- intersect(MAinfo$AnimalID[MAinfo$Timepoint == "0H"],
+                 MAinfo$AnimalID[MAinfo$Timepoint == "24H"])
+s0 <- sapply(ids, function(id) rownames(MAinfo)[MAinfo$AnimalID == id & MAinfo$Timepoint == "0H"][1])
+s24 <- sapply(ids, function(id) rownames(MAinfo)[MAinfo$AnimalID == id & MAinfo$Timepoint == "24H"][1])
+
+# Compute log2 fold change
+fc <- MA.clean[, s24]- MA.clean[, s0]
+
+# PCA
+pca <- prcomp(t(fc), scale. = TRUE)
+var_exp <- summary(pca)$importance[2, 1:2] * 100
+score.df <- data.frame(pca$x, Vaccine = MAinfo[s24, "Vaccine"])
+
+# Plot with ellipses
+p <- ggplot(score.df, aes(PC1, PC2, color = Vaccine, fill = Vaccine)) +
+  geom_point(size = 2) +
+  stat_ellipse(type = "norm", alpha = 0.2, geom = "polygon", color = NA, level = .75) +
+  theme(aspect.ratio = 1,
+        panel.border = element_rect(color = "black", fill = NA),
+        panel.background = element_blank()) +
+  labs(x = sprintf("PC1 (%.1f%%)", var_exp[1]),
+       y = sprintf("PC2 (%.1f%%)", var_exp[2])) +
+  scale_color_manual(values = vaccine_colors) +
+  scale_fill_manual(values = vaccine_colors)
+
+p
+ggsave(file.path(results_dir, "PCA_log2FC_24h_vs_0h_ellipses.pdf"), p, width = 4, height = 4)
+
+
+
+```
+
+## Differential Expression Analysis
+
+```{r}
+# Function: keep probe with highest t-stat per gene
+findLargest <- function(probe, gene, tstat) {
+  names(tstat) <- probe
+  best <- sapply(split(tstat, gene), function(x) names(which.max(abs(x))))
+  best
+}
+
+# DEG analysis function
+deg_analysis <- function(group) {
+  samples <- rownames(MAinfo[MAinfo$Vaccine == group & MAinfo$Timepoint %in% c("0H", "24H"), ])
+  design <- model.matrix(~ AnimalID + Timepoint, data = MAinfo[samples, ])
+  topTable(eBayes(lmFit(MA.clean[, samples], design), trend = TRUE, robust = TRUE), coef = "Timepoint24H", number = Inf, adjust.method = "BH")
+}
+
+# Run DEG and post-process
+# filter probes that mapped to the same genes based on the ones with highest t-statistic
+groups <- c("mRNA", "Vaxigrip", "Fluad")
+deg_results <- lapply(groups, function(group) {
+  deg <- deg_analysis(group)
+  deg$qvalue <- qvalue::qvalue(deg$P.Value)$qvalues
+  deg$ProbeID <- rownames(deg)
+  deg <- left_join(deg, ProbeInfo, by = "ProbeID")
+  deg <- deg[!is.na(deg$GeneID), ]
+  keep <- findLargest(deg$ProbeID, deg$GeneID, deg$t)
+  deg[match(keep, deg$ProbeID), ]
+})
+names(deg_results) <- groups
+
+# Save results
+for (g in groups) {
+  write.table(deg_results[[g]], file.path(results_dir, paste0("DEG_", g, "_with_gene_symbols.tsv")),
+              sep = "\t", row.names = FALSE)
+}
+
+```
+
+### Volcano plots
+
+```{r volcano}
+# Plot volcano for each group
+for (group in names(deg_results)) {
+  df <- deg_results[[group]]
+  labs <- df$GeneID
+
+  up <- df$qvalue < 0.05 & df$logFC > 1
+  down <- df$qvalue < 0.05 & df$logFC < -1
+
+  p <- EnhancedVolcano(
+    df,
+    lab = labs,
+    selectLab = "none",
+    x = 'logFC',
+    y = 'P.Value',
+    pCutoff = NA,
+    FCcutoff = 1,
+    pointSize = 1,
+    colCustom = setNames(
+      ifelse(up, "#f44336", ifelse(down, "#3f51b5", "grey")),
+      rownames(df)
+    ),
+    colAlpha = 1,
+    drawConnectors = TRUE,
+    boxedLabels = TRUE,
+    title = NULL,
+    subtitle = NULL,
+    caption = NULL,
+    legendPosition = "none",
+    xlim = c(-5, 10),
+    ylim = c(0, 10)
+  ) +
+    annotate("text", x = 9.5, y = 9.5, label = paste("Up:", sum(up)), hjust = 1, size = 3) +
+    annotate("text", x = -5, y = 9.5, label = paste("Down:", sum(down)), hjust = 0, size = 3)
+
+  ggsave(file.path(results_dir, paste0("volcano_", group, ".pdf")), p, width = 4, height = 4)
+}
+
+
+```
+
+### Differential expression with time as interaction term
+
+Evaluate if there is any interaction between time and group. This is done to see if there is any specific changes in a group but not in the others.
+
+```{r}
+# Setup
+MAinfo$Vaccine <- relevel(factor(MAinfo$Vaccine), ref = "mRNA")
+keep <- rownames(MAinfo)[MAinfo$Timepoint %in% c("0H", "24H")]
+design <- model.matrix(~ AnimalID + Vaccine * Timepoint, data = MAinfo[keep, ])
+fit <- eBayes(lmFit(MA.clean[, keep], design))
+
+# Helper to filter one probe per gene by largest |t|
+filter_by_gene <- function(df) {
+  df$ProbeID <- rownames(df)
+  df <- left_join(df, ProbeInfo, by = "ProbeID")
+  keep <- findLargest(df$ProbeID, df$GeneID, abs(df$t))
+  df[match(keep, df$ProbeID), ]
+}
+
+# Get filtered DEGs for each group
+mrna_vaxigrip <- filter_by_gene(
+  topTable(fit, coef = "VaccineVaxigrip:Timepoint24H", number = 1e6)
+)
+
+mrna_fluad <- filter_by_gene(
+  topTable(fit, coef = "VaccineFluad:Timepoint24H", number = 1e6) 
+)
+
+
+# compare the interaction between group and timepoint
+mrna_fluad_filtered <- mrna_fluad[!rownames(mrna_fluad) %in% rownames(mrna_vaxigrip),]
+mrna_vaxigrip_filtered <- mrna_vaxigrip[!rownames(mrna_vaxigrip) %in% rownames(mrna_fluad),] 
+shared <- mrna_vaxigrip[rownames(mrna_vaxigrip) %in% rownames(mrna_fluad),]
+
+#cat(paste0(ProbeInfo[rownames(mrna_fluad_filtered),]$GeneID, collapse = "\n"))
+
+```
+
+### Plot selected genes
+
+```{r}
+
+# Pick your gene of interest
+genes_of_interest <- c("CCL2", "IFNAR1","IFNAR2", "APOBEC3A", "SCIN", "LRG1" , "LOXL1", "CCL8", "MS4A4A", "OAS1", "IL23A", "LOC699418", "LGALS17C", "LOC699418", "GSG1", "CCR3", "ISG15", "HERC5", "IFIT3","RPL35A")
+
+for(i in seq_along(genes_of_interest)) {
+  gene_to_plot <- genes_of_interest[i]
+  print(gene_to_plot)
+# Find ProbeID (using one group as reference, e.g., "mRNA")
+probe_id <- deg_results[["mRNA"]]$ProbeID[deg_results[["mRNA"]]$GeneID == gene_to_plot]
+
+# Extract expression values for that probe
+expr <- MA[probe_id, ]
+df <- data.frame(
+  Expression = as.numeric(expr),
+  Vaccine = MAinfo[names(expr), "Vaccine"],
+  Timepoint = MAinfo[names(expr), "Timepoint"],
+  AnimalID = MAinfo[names(expr), "AnimalID"]
+)
+
+# Combine Vaccine and Timepoint into a single x-axis variable
+df$VaccineTimepoint <- paste(df$Vaccine, df$Timepoint, sep = "_")
+
+# Plot
+ggplot(df, aes(x = VaccineTimepoint, y = Expression, color = Vaccine)) +
+  geom_boxplot(outlier.shape = "") +
+  geom_jitter(width = 0.2, size = 2) +
+  labs(x = "", title = gene_to_plot, y = "Normalized expression (Log2)") +
+  scale_color_manual(values = vaccine_colors) +
+  #ylim(0,20) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
+        aspect.ratio = 1,
+        axis.text.y = element_text(size = 12)) 
+
+  ggsave(file.path(results_dir, paste0("selected_genes/",gene_to_plot,"_expression" , ".pdf")), width = 4, height = 4)
+}
+
+```
+
+### Heatmap clusters ORA
+
+```{r}
+### Adapted Heatmap with Modules and KEGG Enrichment ###
+
+
+# 1. Prepare your DEG data (assuming you have deg_results from your analysis)
+# Combine all significant DEGs (adjust p-value and logFC thresholds as needed)
+degs_interaction <- list(mrna_vaxigrip, mrna_fluad)
+all_degs <- lapply(degs_interaction, function(x) {
+  x %>% filter(adj.P.Val < 0.05, abs(logFC) > 1) %>% 
+    dplyr::select(GeneID, logFC, adj.P.Val, ProbeID)
+})
+
+# Combine all DEGs from different groups
+combined_degs <- do.call(rbind, all_degs) %>% 
+  group_by(GeneID) %>%
+  slice_max(order_by = logFC, with_ties = FALSE) %>%
+  ungroup()
+
+# 2. Get expression matrix (using your MA.clean data)
+# Filter for DEGs and select one probe per gene (highest variance)
+expr_matrix <- fc[rownames(fc) %in% combined_degs$ProbeID, ]
+expr_matrix <- expr_matrix[!duplicated(ProbeInfo[rownames(expr_matrix), "GeneID"]), ]
+rownames(expr_matrix) <- ProbeInfo[rownames(expr_matrix), "GeneID"]
+
+# 3. Cluster genes into modules
+# Scale the expression matrix
+scaled_expr <- t(scale(t(expr_matrix)))
+
+# Hierarchical clustering
+gene_dist <- dist(scaled_expr, method = "euclidean")
+gene_clust <- hclust(gene_dist, method = "ward.D2")
+
+gg_color_hue <- function(n) {
+  hues = seq(15, 375, length = n + 1)
+  hcl(h = hues, l = 65, c = 100)[1:n]
+}
+
+modules <- cutree(gene_clust, k = 6)
+module_colors <- gg_color_hue(max(modules))[modules]
+
+# 4. KEGG enrichment for each module
+# Function to perform KEGG enrichment
+## --- 1. download & parse all Macaca pathways safely -------------
+
+#mcc_pathways <- keggList("pathway", "mcc")
+#pathway_ids  <- names(mcc_pathways)
+
+#safe_keggGet <- function(id) tryCatch(keggGet(id)[[1]], error = \(e) NULL)
+
+#pathway_data <- Filter(Negate(is.null), lapply(pathway_ids, safe_keggGet))
+
+#pathway_genes <- setNames(lapply(pathway_data, \(x) {
+#  g <- x$GENE
+#  if (is.null(g) || length(g) < 2) return(character(0))
+#  raw_entries <- g[seq(2, length(g), 2)]
+# gene_symbols <- sub(";.*", "", raw_entries)
+# gene_symbols[!grepl("^\\[KO:", gene_symbols)]
+#}), sapply(pathway_data, `[[`, "NAME"))
+
+
+#saveRDS(pathway_genes, "../data/mcc_kegg_pathways.rds")   
+pathway_genes <- readRDS("../data/mcc_kegg_pathways.rds")
+
+## --- 2. enrichment function -------------------------------------
+
+# Map gene symbols to Entrez IDs
+symbol_to_entrez <- function(x) unique(bitr(x, "SYMBOL", "ENTREZID", org.Mmu.eg.db)$ENTREZID)
+
+enrichment <- function(genes, universe) enrichGO(
+  gene = symbol_to_entrez(genes),
+  universe = symbol_to_entrez(universe),
+  ont = "BP", OrgDb = org.Mmu.eg.db,
+  pAdjustMethod = "BH", qvalueCutoff = 0.05
+)
+
+module_enrichment <- setNames(lapply(unique(modules), function(m) {
+  genes <- names(modules)[modules == m]
+  res <- tryCatch(enrichment(genes, mrna_vaxigrip$GeneID), error = \(e) { message("Module ", m, ": ", e$message); NULL })
+  if (!is.null(res) && nrow(res@result)) simplify(res, 0.8, "p.adjust", min) else res
+}), paste0("M", unique(modules)))
+
+# Row annotation
+module_annotation <- data.frame(module = factor(modules), row.names = names(modules))
+module_colors <- setNames(pal_jama()(length(unique(modules))), unique(modules))
+col_order <- colnames(scaled_expr)
+
+# Heatmap
+MAinfo_filtered <- MAinfo %>% filter(Timepoint == "24H")
+stopifnot(all(rownames(MAinfo_filtered) == colnames(scaled_expr)))
+
+pheatmap(
+  scaled_expr,
+  annotation_row = module_annotation,
+  annotation_col = MAinfo_filtered[col_order, "Vaccine", drop = FALSE],
+  cluster_rows = gene_clust,
+  cutree_rows = length(unique(modules)),
+  annotation_colors = list(module = module_colors, Vaccine = vaccine_colors),
+  color = colorRampPalette(c("#3f51b5", "white", "#f44336"))(100),
+  scale = "none", show_rownames = FALSE, show_colnames = FALSE,
+  filename = file.path(results_dir, "module_heatmap_degs_interaction.pdf"),
+  width = 5,
+  height = 5
+)
+
+
+```
+
+### Plot GO results
+
+```{r}
+df <- data.table::rbindlist(lapply(names(module_enrichment), function(m) {
+  res <- module_enrichment[[m]]
+  if (!is.null(res) && nrow(res@result) > 0)
+    cbind(as.data.frame(res@result), module = m)
+}), fill = TRUE)
+
+top <- df[p.adjust < 0.05, head(.SD[order(p.adjust)], 3), by = module]
+desired_order <- paste0("M",c(3, 5, 6, 2, 1, 4))
+top$module <- factor(top$module, levels = desired_order)
+top$Description <- paste0(toupper(substr(top$Description, 1, 1)), substr(top$Description, 2, nchar(top$Description)))
+
+module_colors <- setNames(pal_jama()(length(unique(modules))), paste0("M",unique(modules)))
+
+ggplot(top, aes(-log10(p.adjust), Description, fill = module, color = module)) +
+  geom_segment(aes(x = 0, xend = -log10(p.adjust), yend = Description), size = 5) +
+  geom_point(size = 6, shape = 21, color = "black", stroke = 1) +
+  facet_wrap(~ module, ncol = 1, scales = "free_y") +
+  geom_vline(xintercept = -log10(0.05), linetype = "dotted", color = "grey40", size = 1) +
+  labs(x = "-log10(Adjusted P-value)", y = NULL) +
+  scale_y_discrete(position = "right") +
+  scale_color_manual(values = module_colors)+
+  scale_fill_manual(values = module_colors)+
+  theme_minimal() +
+  theme(axis.text.y = element_text(face = "bold"),
+        legend.position = "none",
+        panel.grid = element_blank())
+
+ggsave(file.path(results_dir, "modules_ORA_GO.pdf"), width = 6, height = 5)
+```
+
+### Modules over time
+
+```{r}
+# 1. Select top probe per gene
+top_probes <- bind_rows(mrna_fluad, mrna_vaxigrip) %>%
+  group_by(GeneID) %>%
+  slice_max(abs(logFC), n = 1, with_ties = FALSE) %>%
+  filter(ProbeID %in% rownames(MA.clean), GeneID %in% names(modules)) %>%
+  mutate(Module = modules[GeneID])
+
+# 2. Long expression table with sample info
+expr_long <- MA.clean[top_probes$ProbeID, ] %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("ProbeID") %>%
+  tidyr::pivot_longer(-ProbeID, names_to = "Sample", values_to = "Expr") %>%
+  left_join(top_probes, by = "ProbeID") %>%
+  mutate( Animal = stringr::str_extract(Sample, "I\\d+"),
+          Time = stringr::str_replace(stringr::str_extract(Sample, "D0|24H|W4-24H"), "D0", "0H"),
+          Time = factor(Time, levels = c("0H", "24H", "W4-24H")),
+          Vaccine = MAinfo$Vaccine[match(Animal, MAinfo$Animal)]
+          )
+
+# 3. Average per module/group/time
+plot_df <- expr_long %>%
+  group_by(Module, Vaccine, Time, Animal) %>%
+  summarise(Expr = mean(Expr), .groups = "drop") %>%
+  group_by(Module, Vaccine, Time) %>%
+  summarise(Mean = mean(Expr), SD = sd(Expr), .groups = "drop") %>%
+  mutate(Module = paste0("M", Module))
+
+plot_df$Module <- factor(plot_df$Module, levels = desired_order)
+# 4. Plot
+ggplot(plot_df, aes(x = Time, y = Mean, color = Vaccine, group = Vaccine)) +
+  geom_line() +
+  geom_point(size = 1) +
+  geom_errorbar(aes(ymin = Mean - SD, ymax = Mean + SD), width = 0.1) +
+  facet_wrap(~Module, ncol= 1) +
+  scale_color_manual(values = vaccine_colors) +
+  labs(x = "", y = "Mean expression (log2)") +
+  theme_minimal() +
+  theme(panel.grid = element_blank(),
+        legend.position = "none")
+
+ggsave(file.path(results_dir, "modules_expression.pdf"), width = 2, height = 5)
+```
+
+### Compare DEGS across groups
+
+```{r}
+# Assuming deg_results is a named list with DEG results per group
+deg_flags <- lapply(names(deg_results), function(group) {
+  deg_results[[group]] %>%
+    mutate(!!paste0("DEG_", group) := (qvalue < 0.05 & logFC > 1)) %>%
+    dplyr::select(GeneID, !!paste0("DEG_", group))
+})
+
+deg_summary <- Reduce(function(x, y) full_join(x, y, by = "GeneID"), deg_flags)
+
+deg_summary <- deg_summary %>%
+  mutate(
+    DEG_class = case_when(
+      DEG_mRNA & DEG_Vaxigrip & DEG_Fluad ~ "Shared by all",
+      DEG_mRNA & DEG_Vaxigrip ~ "mRNA + Vaxigrip",
+      DEG_mRNA & DEG_Fluad ~ "mRNA + Fluad",
+      DEG_Vaxigrip & DEG_Fluad ~ "Vaxigrip + Fluad",
+      DEG_mRNA ~ "mRNA only",
+      DEG_Vaxigrip ~ "Vaxigrip only",
+      DEG_Fluad ~ "Fluad only",
+      TRUE ~ "Not DEG"
+    )
+  )
+
+write.csv(deg_summary, file = file.path(results_dir, "DEG_classification.csv"), row.names = FALSE)
+
+```
+
+#### Upset upload
+
+```{r}
+deg_binary <- deg_summary %>%
+  select(starts_with("DEG_")) %>%
+  mutate(across(everything(), ~ as.integer(as.logical(.)))) %>%
+  select(-DEG_class)
+
+# Plot
+
+{
+  pdf(file = file.path(results_dir, "deg_upset_overlap.pdf"), onefile=FALSE, width = 4, height = 4)
+  upset_plot <- upset(deg_binary, sets = c("DEG_mRNA", "DEG_Vaxigrip", "DEG_Fluad"),
+        order.by = "freq", keep.order = TRUE, sets.bar.color = c("#EE2926","#456990","#49BEAA"))
+  print(upset_plot)
+  dev.off()
+}
+
+```
+
+#### Euler diagrams
+
+```{r euler}
+# Create a logical matrix for the Venn
+colnames(deg_binary) <- c("mRNA", "Vaxigrip", "Fluad")
+venn_input <- deg_binary == 1
+
+# Create the Euler diagram
+fit <- euler(venn_input)
+
+# Plot
+{
+   pdf(file = file.path(results_dir, "deg_euler_overlap.pdf"), onefile=FALSE, width = 4, height = 4)
+   euler_plot <- plot(fit,
+       fills = c("#EE2926", "#456990", "#49BEAA"),
+       labels = list(font = 1),
+       quantities = TRUE,
+       edges = TRUE)
+   print(euler_plot)
+  dev.off()
+}
+```
+
+#### Over-representation analysis (ORA) of DEGs
+
+```{r}
+gene_list_by_class <- deg_summary %>%
+  filter(DEG_class != "Not DEG") %>%
+  group_by(DEG_class) %>%
+  summarise(genes = list(unique(GeneID))) %>%
+  tibble::deframe() 
+
+ora_by_class <- setNames(lapply(names(gene_list_by_class), function(class_name) {
+  genes <- gene_list_by_class[[class_name]]
+  res <- tryCatch(enrichment(genes, deg_summary$GeneID), error = \(e) {
+    message("Class ", class_name, ": ", e$message)
+    NULL
+  })
+  if (!is.null(res) && nrow(res@result)) simplify(res, 0.8, "p.adjust", min) else res
+}), names(gene_list_by_class))
+
+```
+
+## Session info
+
+```{r}
+sessionInfo()
+```
