@@ -4,7 +4,7 @@ This repository contains source code and processed microarray input data for tra
 
 ## Table of contents
 * [General information](#general-information)
-* [View the analysis report](#view-the-analysis-report)
+* [How to view the analysis](#how-to-view-the-analysis)
 * [Repository structure](#repository-structure)
 * [Reproducibility](#reproducibility)
 * [License](#license)
@@ -13,13 +13,19 @@ This repository contains source code and processed microarray input data for tra
 
 The main analysis is implemented in `src/gene_array_analysis.qmd`. The workflow loads files from `data/`, performs preprocessing, PCA, differential expression analysis, and pathway-level summaries.
 
-## View the analysis report
+## How to view the analysis
 
-👉 **[Click here to open the full rendered analysis report (HTML)](https://lore-lab-vaccine-immunology.github.io/flu_vaccines_nhp/src/gene_array_analysis.html)**
+The rendered HTML report is not versioned in this repository. To view the full analysis, render it locally from the Quarto source:
+
+```bash
+quarto render src/gene_array_analysis.qmd
+```
+
+Then open `src/gene_array_analysis.html` in your browser.
 
 ## Repository structure
 
-- `src/`: analysis source files and rendered report.
+- `src/`: analysis source files.
 - `data/`: processed expression and annotation input files.
 - `influenza_vaccine.Rproj`: RStudio project file.
 
