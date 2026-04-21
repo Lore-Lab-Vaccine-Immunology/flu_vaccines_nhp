@@ -4,9 +4,9 @@ format: html
 editor: visual
 ---
 
-# Omics Data Analysis
+# Microarray data analysis
 
-This document provides a step-by-step guide to analyzing omics data using R. The data is located in the `data` folder, and the results will be saved in a `results` folder named according to today's date.
+This document provides a step-by-step guide to analyzing a micro array data using R. The data is located in the `data` folder, and the results will be saved in a `results` folder named according to today's date.
 
 ## Setup
 
@@ -31,8 +31,8 @@ library(org.Mmu.eg.db)
 library(dplyr)
 
 # Set up directories
-data_dir <- "../data"
-results_dir <- paste0("../results/", Sys.Date())
+data_dir <- "data"
+results_dir <- paste0("results/", Sys.Date())
 dir.create(results_dir, recursive = TRUE)
 knitr::opts_chunk$set(seed = 1)
 
@@ -95,6 +95,7 @@ score.df <- as.data.frame(MA.pca$x)
 score.df$Vaccine <- MAinfo[rownames(score.df), "Vaccine"]
 score.df$Timepoint <- MAinfo[rownames(score.df), "Timepoint"]
 score.df$NHP <- MAinfo[rownames(score.df), "AnimalID"]
+score.df$Vaccine <- factor(score.df$Vaccine, levels = c("mRNA", "Vaxigrip", "Fluad"))
 
 # Calculate variance explained
 var_explained <- summary(MA.pca)$importance[2, 1:2] * 100  # PC1 and PC2
@@ -144,6 +145,8 @@ fc <- MA.clean[, s24]- MA.clean[, s0]
 pca <- prcomp(t(fc), scale. = TRUE)
 var_exp <- summary(pca)$importance[2, 1:2] * 100
 score.df <- data.frame(pca$x, Vaccine = MAinfo[s24, "Vaccine"])
+score.df$Vaccine <- factor(score.df$Vaccine, levels = c("mRNA", "Vaxigrip", "Fluad"))
+
 
 # Plot with ellipses
 p <- ggplot(score.df, aes(PC1, PC2, color = Vaccine, fill = Vaccine)) +
@@ -227,6 +230,7 @@ for (group in names(deg_results)) {
       ifelse(up, "#f44336", ifelse(down, "#3f51b5", "grey")),
       rownames(df)
     ),
+    axisLabSize = 15,
     colAlpha = 1,
     drawConnectors = TRUE,
     boxedLabels = TRUE,
@@ -237,12 +241,12 @@ for (group in names(deg_results)) {
     xlim = c(-5, 10),
     ylim = c(0, 10)
   ) +
-    annotate("text", x = 9.5, y = 9.5, label = paste("Up:", sum(up)), hjust = 1, size = 3) +
-    annotate("text", x = -5, y = 9.5, label = paste("Down:", sum(down)), hjust = 0, size = 3)
+    theme(axis.text.x = element_text(color = "black")) +
+    annotate("text", x = 9.5, y = 9.5, label = paste("Up:\n", sum(up)), hjust = 1, size = 5) +
+    annotate("text", x = -5, y = 9.5, label = paste("Down:\n", sum(down)), hjust = 0, size = 5)
 
   ggsave(file.path(results_dir, paste0("volcano_", group, ".pdf")), p, width = 4, height = 4)
 }
-
 
 ```
 
@@ -280,6 +284,7 @@ mrna_fluad_filtered <- mrna_fluad[!rownames(mrna_fluad) %in% rownames(mrna_vaxig
 mrna_vaxigrip_filtered <- mrna_vaxigrip[!rownames(mrna_vaxigrip) %in% rownames(mrna_fluad),] 
 shared <- mrna_vaxigrip[rownames(mrna_vaxigrip) %in% rownames(mrna_fluad),]
 
+
 #cat(paste0(ProbeInfo[rownames(mrna_fluad_filtered),]$GeneID, collapse = "\n"))
 
 ```
@@ -305,10 +310,14 @@ df <- data.frame(
   Timepoint = MAinfo[names(expr), "Timepoint"],
   AnimalID = MAinfo[names(expr), "AnimalID"]
 )
+df$Vaccine <- factor(df$Vaccine, levels = c("mRNA", "Vaxigrip", "Fluad"))
 
 # Combine Vaccine and Timepoint into a single x-axis variable
-df$VaccineTimepoint <- paste(df$Vaccine, df$Timepoint, sep = "_")
-
+df$VaccineTimepoint <- factor(
+  paste(df$Vaccine, df$Timepoint, sep = "_"),
+  levels = unique(paste(rep(c("mRNA", "Vaxigrip", "Fluad"), each = length(unique(df$Timepoint))),
+                        rep(unique(df$Timepoint), times = 3), sep = "_"))
+)
 # Plot
 ggplot(df, aes(x = VaccineTimepoint, y = Expression, color = Vaccine)) +
   geom_boxplot(outlier.shape = "") +
@@ -317,9 +326,10 @@ ggplot(df, aes(x = VaccineTimepoint, y = Expression, color = Vaccine)) +
   scale_color_manual(values = vaccine_colors) +
   #ylim(0,20) +
   theme_bw() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 14, color = "black"),
         aspect.ratio = 1,
-        axis.text.y = element_text(size = 12)) 
+        axis.text.y = element_text(size = 14, color = "black"),
+        axis.title.y = element_text(size = 14)) 
 
   ggsave(file.path(results_dir, paste0("selected_genes/",gene_to_plot,"_expression" , ".pdf")), width = 4, height = 4)
 }
@@ -332,8 +342,7 @@ ggplot(df, aes(x = VaccineTimepoint, y = Expression, color = Vaccine)) +
 ### Adapted Heatmap with Modules and KEGG Enrichment ###
 
 
-# 1. Prepare your DEG data (assuming you have deg_results from your analysis)
-# Combine all significant DEGs (adjust p-value and logFC thresholds as needed)
+# 1. Combine all significant DEGs (adjust p-value and logFC thresholds as needed)
 degs_interaction <- list(mrna_vaxigrip, mrna_fluad)
 all_degs <- lapply(degs_interaction, function(x) {
   x %>% filter(adj.P.Val < 0.05, abs(logFC) > 1) %>% 
@@ -345,6 +354,10 @@ combined_degs <- do.call(rbind, all_degs) %>%
   group_by(GeneID) %>%
   slice_max(order_by = logFC, with_ties = FALSE) %>%
   ungroup()
+
+# Save results
+
+write.csv(combined_degs, file = file.path(results_dir, "combined_DEGs_interaction.csv"), row.names = FALSE)
 
 # 2. Get expression matrix (using your MA.clean data)
 # Filter for DEGs and select one probe per gene (highest variance)
@@ -493,10 +506,31 @@ expr_long <- MA.clean[top_probes$ProbeID, ] %>%
 # 3. Average per module/group/time
 plot_df <- expr_long %>%
   group_by(Module, Vaccine, Time, Animal) %>%
-  summarise(Expr = mean(Expr), .groups = "drop") %>%
+  summarise(Expr = mean(Expr), .groups = "drop") 
+
+plot_df %>%
+  rename(log2Expression_mean = Expr) %>%
+  write.csv(file.path(results_dir, "module_expression_over_time.csv"), row.names = FALSE)
+
+# calculate fold change based on 0-24 per animal
+plot_df %>% 
+  filter(Time %in% c("0H", "24H")) %>%
+  group_by(Module, Vaccine, Animal) %>%
+  arrange(Time) %>%
+  mutate(log2FoldChange_module = Expr - first(Expr)) %>%
+  rename(log2Expression_mean = Expr) %>%
+  filter(Time == "24H") %>%
+  select(-Time, -log2Expression_mean) %>%
+  ungroup() %>%
+  write.csv(file.path(results_dir, "module_expression_24h_fold_change.csv"), row.names = FALSE)
+
+
+plot_df <- plot_df %>%
   group_by(Module, Vaccine, Time) %>%
   summarise(Mean = mean(Expr), SD = sd(Expr), .groups = "drop") %>%
   mutate(Module = paste0("M", Module))
+
+
 
 plot_df$Module <- factor(plot_df$Module, levels = desired_order)
 # 4. Plot
@@ -520,13 +554,19 @@ ggsave(file.path(results_dir, "modules_expression.pdf"), width = 2, height = 5)
 # Assuming deg_results is a named list with DEG results per group
 deg_flags <- lapply(names(deg_results), function(group) {
   deg_results[[group]] %>%
-    mutate(!!paste0("DEG_", group) := (qvalue < 0.05 & logFC > 1)) %>%
-    dplyr::select(GeneID, !!paste0("DEG_", group))
+    mutate(
+      !!paste0("DEG_", group) := (qvalue < 0.05 & abs(logFC) > 1),         # all
+      !!paste0("DEG_up_", group) := (qvalue < 0.05 & logFC > 1),           # up
+      !!paste0("DEG_down_", group) := (qvalue < 0.05 & logFC < -1)         # down
+    ) %>%
+    dplyr::select(GeneID, starts_with("DEG_"))
 })
+
 
 deg_summary <- Reduce(function(x, y) full_join(x, y, by = "GeneID"), deg_flags)
 
 deg_summary <- deg_summary %>%
+  mutate(across(starts_with("DEG_"), ~tidyr::replace_na(., FALSE))) %>%
   mutate(
     DEG_class = case_when(
       DEG_mRNA & DEG_Vaxigrip & DEG_Fluad ~ "Shared by all",
@@ -547,44 +587,59 @@ write.csv(deg_summary, file = file.path(results_dir, "DEG_classification.csv"), 
 #### Upset upload
 
 ```{r}
-deg_binary <- deg_summary %>%
-  select(starts_with("DEG_")) %>%
-  mutate(across(everything(), ~ as.integer(as.logical(.)))) %>%
-  select(-DEG_class)
-
-# Plot
-
-{
-  pdf(file = file.path(results_dir, "deg_upset_overlap.pdf"), onefile=FALSE, width = 4, height = 4)
-  upset_plot <- upset(deg_binary, sets = c("DEG_mRNA", "DEG_Vaxigrip", "DEG_Fluad"),
-        order.by = "freq", keep.order = TRUE, sets.bar.color = c("#EE2926","#456990","#49BEAA"))
-  print(upset_plot)
-  dev.off()
+# Function to make upset plot given a prefix
+make_upset <- function(file_suffix) {
+  # decide column suffix
+  suffix <- switch(file_suffix,
+                   all = "",
+                   up = "_up",
+                   down = "_down")
+  cols <- paste0("DEG", suffix, c("_Fluad", "_Vaxigrip", "_mRNA"))
+  deg_binary <- deg_summary %>%
+    select(any_of(cols)) %>%
+    mutate(across(everything(), ~ as.integer(as.logical(.))))
+  colnames(deg_binary) <- c("Fluad", "Vaxigrip", "mRNA")
+  {
+  pdf(file.path(results_dir, paste0("deg_upset_", file_suffix, ".pdf")), width = 4, height = 4)
+    print(
+      upset(deg_binary,
+            sets = c("Fluad", "Vaxigrip", "mRNA"),
+            order.by = "freq", keep.order = TRUE,
+            sets.bar.color = c("#49BEAA","#456990","#EE2926"),
+            text.scale = 1.5)
+    )
+    dev.off()}
 }
+
+# Run for all / up / down
+make_upset("all")
+make_upset("up")
+make_upset("down")
 
 ```
 
 #### Euler diagrams
 
 ```{r euler}
-# Create a logical matrix for the Venn
-colnames(deg_binary) <- c("mRNA", "Vaxigrip", "Fluad")
-venn_input <- deg_binary == 1
-
-# Create the Euler diagram
-fit <- euler(venn_input)
-
-# Plot
-{
-   pdf(file = file.path(results_dir, "deg_euler_overlap.pdf"), onefile=FALSE, width = 4, height = 4)
-   euler_plot <- plot(fit,
-       fills = c("#EE2926", "#456990", "#49BEAA"),
-       labels = list(font = 1),
-       quantities = TRUE,
-       edges = TRUE)
-   print(euler_plot)
+make_euler <- function(file_suffix) {
+  suffix <- ifelse(file_suffix == "all", "", paste0("_", file_suffix))
+  deg_binary <- deg_summary %>%
+    select(any_of(paste0("DEG", suffix, c("_mRNA", "_Vaxigrip", "_Fluad")))) %>%
+    mutate(across(everything(), ~ as.integer(as.logical(.))))
+  colnames(deg_binary) <- c("mRNA", "Vaxigrip", "Fluad")
+  
+  pdf(file.path(results_dir, paste0("deg_euler_", file_suffix, ".pdf")), width = 4, height = 4)
+  print(plot(euler(deg_binary == 1),
+             fills = c("#EE2926","#456990","#49BEAA"),
+             labels = list(font=1),
+             quantities = TRUE, edges = TRUE))
   dev.off()
 }
+
+make_euler("all")
+make_euler("up")
+make_euler("down")
+
 ```
 
 #### Over-representation analysis (ORA) of DEGs
