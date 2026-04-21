@@ -1,6 +1,4 @@
-# flu_vaccines_nhp
-
-## Influenza vaccine study in non-human primates
+# Seasonal influenza mRNA vaccine induces stronger innate immunity and comparable or better adaptive responses than licensed inactivated vaccines in non-human primates
 
 This repository contains source code and processed microarray input data for transcriptomic analysis of non-human primates vaccinated with **mRNA**, **Vaxigrip**, or **Fluad** influenza vaccines.
 
