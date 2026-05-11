@@ -2,6 +2,9 @@
 title: "Influenza vaccine study"
 format: html
 editor: visual
+execute:
+  echo: true
+  warning: false
 ---
 
 # Microarray data analysis
@@ -11,13 +14,13 @@ This document provides a step-by-step guide for microarray analysis in R. Input 
 ## Setup
 
 ```{r}
+#| message: false
 # Load necessary libraries
 library(matrixStats)
 library(factoextra)
 library(ggplot2)
 library(gplots)
 library(RColorBrewer)
-library(wesanderson)
 library(limma)
 library(gridExtra)
 library(ggsci)
@@ -94,6 +97,7 @@ score.df <- as.data.frame(MA.pca$x)
 score.df$Vaccine <- MAinfo[rownames(score.df), "Vaccine"]
 score.df$Timepoint <- MAinfo[rownames(score.df), "Timepoint"]
 score.df$NHP <- MAinfo[rownames(score.df), "AnimalID"]
+score.df <- score.df %>% filter(!Timepoint %in% c("W4-24h", "W4-24H"))
 score.df$Vaccine <- factor(score.df$Vaccine, levels = c("mRNA", "Vaxigrip", "Fluad"))
 
 # Percent variance explained by PC1 and PC2.
@@ -307,7 +311,7 @@ df <- data.frame(
   Vaccine = MAinfo[names(expr), "Vaccine"],
   Timepoint = MAinfo[names(expr), "Timepoint"],
   AnimalID = MAinfo[names(expr), "AnimalID"]
-)
+) %>% filter(!Timepoint %in% c("W4-24h", "W4-24H"))
 df$Vaccine <- factor(df$Vaccine, levels = c("mRNA", "Vaxigrip", "Fluad"))
 
 # Build ordered x-axis labels (group_timepoint) for consistent plotting.
@@ -397,7 +401,7 @@ module_colors <- gg_color_hue(max(modules))[modules]
 
 
 #saveRDS(pathway_genes, "../data/mcc_kegg_pathways.rds")   
-pathway_genes <- readRDS("../data/mcc_kegg_pathways.rds")
+pathway_genes <- readRDS("data/mcc_kegg_pathways.rds")
 
 ## --- 2. enrichment function -------------------------------------
 
@@ -493,10 +497,11 @@ expr_long <- MA.clean[top_probes$ProbeID, ] %>%
   tidyr::pivot_longer(-ProbeID, names_to = "Sample", values_to = "Expr") %>%
   left_join(top_probes, by = "ProbeID") %>%
   mutate( Animal = stringr::str_extract(Sample, "I\\d+"),
-          Time = stringr::str_replace(stringr::str_extract(Sample, "D0|24H|W4-24H"), "D0", "0H"),
-          Time = factor(Time, levels = c("0H", "24H", "W4-24H")),
+          Time = stringr::str_replace(stringr::str_extract(Sample, "D0|24H"), "D0", "0H"),
+          Time = factor(Time, levels = c("0H", "24H")),
           Vaccine = MAinfo$Vaccine[match(Animal, MAinfo$Animal)]
-          )
+          ) %>%
+  filter(!is.na(Time))
 
 # 3) Average expression by module, vaccine, timepoint, and animal.
 plot_df <- expr_long %>%
