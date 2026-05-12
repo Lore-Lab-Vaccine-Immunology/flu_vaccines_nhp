@@ -33,7 +33,7 @@ Then open `src/gene_array_analysis.html` in your browser.
 
 Analysis was performed using R version 4.5.3 (2026-03-11), Platform: x86_64-apple-darwin20, Running under: macOS Sonoma 14.8.5.
 
-[Click here to check the rendered analysis and R package versions](src/gene_array_analysis.html).
+[Click here to check the rendered analysis and R package versions](https://lore-lab-vaccine-immunology.github.io/flu_vaccines_nhp/src/gene_array_analysis.html).
 
 ```bash
 git clone https://github.com/Lore-Lab-Vaccine-Immunology/flu_vaccines_nhp
