@@ -2,6 +2,7 @@
 
 This repository contains source code and processed microarray input data for transcriptomic analysis of non-human primates vaccinated with **mRNA**, **Vaxigrip**, or **Fluad** influenza vaccines.
 
+DOI: [10.1038/s41541-026-01492-y](www.doi.org/10.1038/s41541-026-01492-y)
 ## Table of contents
 * [General information](#general-information)
 * [How to view the analysis](#how-to-view-the-analysis)
